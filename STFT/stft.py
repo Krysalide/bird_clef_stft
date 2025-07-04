@@ -3,7 +3,7 @@ import numpy as np
 import torch.nn.functional as F
 from scipy.signal import get_window
 from librosa.util import pad_center, tiny
-from util import window_sumsquare
+from .util import window_sumsquare
 
 
 
@@ -45,7 +45,7 @@ class STFT(torch.nn.Module):
         assert(filter_length >= self.win_length)
         # get window and zero center pad it to filter_length
         fft_window = get_window(window, self.win_length, fftbins=True)
-        print('Warning removed argument in pad_center')
+        #print('Warning removed argument in pad_center')
         fft_window = pad_center(data=fft_window,size=filter_length,mode='constant')
         fft_window = torch.from_numpy(fft_window).float()
 
