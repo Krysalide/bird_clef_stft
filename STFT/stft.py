@@ -197,8 +197,8 @@ class STFTLEARN(torch.nn.Module):
 
         # Make basis learnable if specified
         if learn_basis:
-            self.forward_basis = torch.nn.Parameter(forward_basis_init)
-            self.inverse_basis = torch.nn.Parameter(inverse_basis_init)
+            self.forward_basis = torch.nn.Parameter(forward_basis_init,requires_grad=True)
+            self.inverse_basis = torch.nn.Parameter(inverse_basis_init,requires_grad=True)
         else:
             self.register_buffer('forward_basis', forward_basis_init.float())
             self.register_buffer('inverse_basis', inverse_basis_init.float())
@@ -214,10 +214,18 @@ class STFTLEARN(torch.nn.Module):
         # Make window learnable if specified
         if learn_window:
             # We wrap the window in a Parameter so it's trainable
-            self.fft_window = torch.nn.Parameter(fft_window_init)
+            self.fft_window = torch.nn.Parameter(fft_window_init,requires_grad=True)
         else:
             # If not learning, it remains a buffer
             self.register_buffer('fft_window', fft_window_init)
+
+    
+    def get_fft_basis(self):
+        return self.forward_basis
+
+    def get_window_init(self):
+        # will be relevant only if learn_window is true
+        return self.fft_window
 
 
     def transform(self, input_data):

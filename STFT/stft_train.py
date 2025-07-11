@@ -2,6 +2,7 @@ import torch
 import torch.optim as optim
 # Assuming STFT class is in a file named my_stft_module.py and util.py in same directory
 from stft import STFTLEARN
+import torch.functional as F
 
 # Example Usage
 # Generate some dummy audio data
@@ -26,7 +27,7 @@ dummy_audio = dummy_audio.to(device)
 optimizer = optim.Adam(stft_model.parameters(), lr=0.001)
 
 # Example: A simple training loop (e.g., for autoencoder type reconstruction)
-num_epochs = 100
+num_epochs = 1
 for epoch in range(num_epochs):
     optimizer.zero_grad() # Clear gradients
 

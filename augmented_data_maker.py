@@ -27,7 +27,7 @@ def augment_and_save_audio(input_path, output_path):
 
 # Process each label
 label_count = 0
-max_file_number=5
+max_file_number=15
 for label in os.listdir(audio_input_folder):
     label_path = os.path.join(audio_input_folder, label)
     if not os.path.isdir(label_path):
