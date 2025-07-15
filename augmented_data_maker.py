@@ -4,6 +4,8 @@ import numpy as np
 import os
 from audiomentations import Compose, AddGaussianNoise, TimeStretch, PitchShift, Shift
 
+#'use with bird env!! not birdgpu!!
+
 # Paths
 dataset_root_folder = '/home/christophe/birdclef/'
 audio_input_folder = os.path.join(dataset_root_folder, "train_audio")

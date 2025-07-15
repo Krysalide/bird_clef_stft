@@ -154,7 +154,7 @@ class STFT(torch.nn.Module):
         reconstruction = self.inverse(self.magnitude, self.phase)
         return reconstruction
     
-
+# our class that is learnable
 class STFTLEARN(torch.nn.Module):
     def __init__(self, filter_length=1024, hop_length=512, win_length=None,
                  window='hann', learn_basis=False, learn_window=False):
