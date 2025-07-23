@@ -65,51 +65,64 @@ class STFTLEARN(torch.nn.Module):
 
         # Make basis learnable if specified
         if learn_fft:
-            print('cache ok')
-            self.forward_basis = torch.nn.Parameter(forward_basis_init,requires_grad=True)
-            self.inverse_basis = torch.nn.Parameter(inverse_basis_init,requires_grad=True)
+            print('cache6 ok')
+            self.register_buffer('initial_forward_basis', forward_basis_init.clone())
+            #self.forward_basis = torch.nn.Parameter(forward_basis_init,requires_grad=True)
+            self.forward_basis = torch.nn.Parameter(forward_basis_init.clone(),requires_grad=True)
+            self.inverse_basis = torch.nn.Parameter(inverse_basis_init.clone(),requires_grad=True)
+            
+        
         else:
             self.register_buffer('forward_basis', forward_basis_init.float())
             self.register_buffer('inverse_basis', inverse_basis_init.float())
 
+    
         assert(filter_length >= self.win_length)
 
         # 2. Initialize Window Function
         fft_window_init = get_window(self.window_type, self.win_length, fftbins=True)
         # print('Warning removed argument in pad_center') # This warning can be removed if not relevant for your use case
         fft_window_init = pad_center(data=fft_window_init, size=filter_length, mode='constant')
-        #fft_window_init = torch.from_numpy(fft_window_init).float()
-
-
-
-        # # Make window learnable if specified
-        # if learn_window:
-        #     print('cache2 ok')
-        #     # We wrap the window in a Parameter so it's trainable
-        #     self.fft_window = torch.nn.Parameter(fft_window_init,requires_grad=True)
-        # else:
-        #     # If not learning, it remains a buffer
-        #     self.register_buffer('fft_window', fft_window_init)
         
         fft_window_init_tensor = torch.from_numpy(fft_window_init).float()
+
         if learn_window:
-            print('cache2 ok')
+            
             # Store the initial state as a buffer to ensure it moves with the model
             self.register_buffer('initial_fft_window', fft_window_init_tensor.clone())
-            self.fft_window = torch.nn.Parameter(fft_window_init_tensor, requires_grad=True)
+            self.fft_window = torch.nn.Parameter(fft_window_init_tensor.clone(), requires_grad=True)
         else:
             # If not learning, it remains a buffer
-            self.register_buffer('fft_window', fft_window_init_tensor)
+            self.register_buffer('fft_window', fft_window_init_tensor.clone())
             self.initial_fft_window = None # Not applicable if not learnable
     
+
+    def enforce_forward_basis_constraints(self, delta=0.001):
+        if hasattr(self, 'initial_forward_basis') and self.initial_forward_basis is not None:
+         
+            lower_bound = self.initial_forward_basis - delta
+            upper_bound = self.initial_forward_basis + delta
+            with torch.no_grad():
+                self.forward_basis.copy_(torch.clamp(self.forward_basis, min=lower_bound, max=upper_bound))
+
+    def enforce_fft_window_constraints(self, delta=0.001):
+        if self.learn_window and self.initial_fft_window is not None:
+            lower_bound = self.initial_fft_window - delta
+            upper_bound = self.initial_fft_window + delta
+            with torch.no_grad():
+                self.fft_window.copy_(torch.clamp(self.fft_window, min=lower_bound, max=upper_bound))
+
+
     def get_fft_basis(self):
         return self.forward_basis
     
 
-
     def get_window_init(self):
         # will be relevant only if learn_window is true
         return self.fft_window
+    
+    def forward(self, input_data):
+        return self.transform(input_data=input_data)
 
 
     def transform(self, input_data):
@@ -162,6 +175,8 @@ class STFTLEARN(torch.nn.Module):
         phase = torch.atan2(imag_part, real_part)
 
         return magnitude, phase
+    
+    
 
     def inverse(self, magnitude, phase):
         """Call the inverse STFT (iSTFT), given magnitude and phase tensors produced
@@ -217,35 +232,23 @@ class STFTLEARN(torch.nn.Module):
 
         return inverse_transform
 
-    def forward(self, input_data):
-        """Take input data (audio) to STFT domain and then back to audio.
-
-        Arguments:
-            input_data {tensor} -- Tensor of floats, with shape (num_batch, num_samples)
-
-        Returns:
-            reconstruction {tensor} -- Reconstructed audio given magnitude and phase. Of
-                shape (num_batch, num_samples)
-        """
-        magnitude, phase = self.transform(input_data) # Removed self. assignment as it's not strictly necessary for forward pass
-        reconstruction = self.inverse(magnitude, phase)
-        return reconstruction
-    
-    def enforce_fft_window_constraints(self, delta=0.001):
-        if self.learn_window and self.initial_fft_window is not None:
-            lower_bound = self.initial_fft_window - delta
-            upper_bound = self.initial_fft_window + delta
-            with torch.no_grad():
-                self.fft_window.copy_(torch.clamp(self.fft_window, min=lower_bound, max=upper_bound))
     # def forward(self, input_data):
-    #     return self.transform(input_data=input_data)
+    #     """Take input data (audio) to STFT domain and then back to audio.
 
+    #     Arguments:
+    #         input_data {tensor} -- Tensor of floats, with shape (num_batch, num_samples)
 
+    #     Returns:
+    #         reconstruction {tensor} -- Reconstructed audio given magnitude and phase. Of
+    #             shape (num_batch, num_samples)
+    #     """
+    #     magnitude, phase = self.transform(input_data) # Removed self. assignment as it's not strictly necessary for forward pass
+    #     reconstruction = self.inverse(magnitude, phase)
+    #     return reconstruction
+    
+    
 
-
-
-
-
+# initial code
 
 class STFT(torch.nn.Module):
     def __init__(self, filter_length=1024, hop_length=512, win_length=None,
