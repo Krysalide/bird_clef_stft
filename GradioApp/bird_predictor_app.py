@@ -3,18 +3,16 @@ import torch
 import numpy as np
 import librosa
 import os
+import random
 import mlflow
- 
 from collections import Counter
 from torch.utils.data import Dataset
-
 from model_gradio import BirdNetFFT
 
 print('Gradio version:',gr.__version__)
 
 def get_id_from_label(dict_label:dict,label:str):
     return dict_label[label]
-
 
 class BirdAudioDatasetV2(Dataset):
     def __init__(self, root_dir, audio_extensions=(".ogg",)):
@@ -51,7 +49,6 @@ class BirdAudioDatasetV2(Dataset):
        
         return dict(self.label_counts)
     
-
 bird_dataset=BirdAudioDatasetV2(root_dir="/home/christophe/birdclef/train_audio")
 
 # Constants
@@ -113,14 +110,51 @@ except Exception as e:
     print(f"Failed to load model weights: {e}. Please ensure the MLflow run_id and artifact_path are correct and accessible.")
 
 
+
+def predict_specific_file(audio_path,label,debug=False):
+    """
+    Predict the bird species and return:
+    - prediction string
+    - input file path (to be played)
+    - one real sample path from dataset of that predicted species (≠ input file)
+    """
+    if not os.path.exists(audio_path):
+        return "Error: Audio file not found.", None, None
+
+    audio_tensor = get_audio_data(audio_path).to(device)
+
+    with torch.no_grad():
+        output = bird_model(audio_tensor)
+    predicted_index = torch.argmax(output).item()
+    predicted_label = id2label[predicted_index]
+    if debug:
+        print(predicted_label)
+
+    # Filter matching samples excluding the input file
+    matching_files = [
+        fpath for fpath, label in bird_dataset.samples
+        if label == predicted_label and os.path.abspath(fpath) != os.path.abspath(audio_path)
+    ]
+
+    # Pick one at random to avoid getting the same
+    reference_sample_path = random.choice(matching_files) if matching_files else None
+    assert reference_sample_path!=audio_path
+    if label==predicted_label:
+        prediction_text = f"✅ Espèce prédite correctement: {predicted_label}"
+    else:
+        prediction_text = f"😴 Oups!! le modèle a prédit: {predicted_label}"
+
+    return prediction_text, audio_path, reference_sample_path
+
 # def predict_specific_file(audio_path):
 #     """
 #     Predict the bird species and return:
 #     - prediction string
+#     - input file path (to be played)
 #     - one real sample path from dataset of that predicted species
 #     """
 #     if not os.path.exists(audio_path):
-#         return "Error: Audio file not found.", None
+#         return "Error: Audio file not found.", None, None
 
 #     audio_tensor = get_audio_data(audio_path).to(device)
 
@@ -136,65 +170,40 @@ except Exception as e:
 #             reference_sample_path = fpath
 #             break
 
-#     prediction_text = f"Predicted bird species: {predicted_label}"
-#     return prediction_text, reference_sample_path
-
-def predict_specific_file(audio_path):
-    """
-    Predict the bird species and return:
-    - prediction string
-    - input file path (to be played)
-    - one real sample path from dataset of that predicted species
-    """
-    if not os.path.exists(audio_path):
-        return "Error: Audio file not found.", None, None
-
-    audio_tensor = get_audio_data(audio_path).to(device)
-
-    with torch.no_grad():
-        output = bird_model(audio_tensor)
-    predicted_index = torch.argmax(output).item()
-    predicted_label = id2label[predicted_index]
-
-    # Get one real file from dataset that matches predicted label
-    reference_sample_path = None
-    for fpath, label in bird_dataset.samples:
-        if label == predicted_label:
-            reference_sample_path = fpath
-            break
-
-    prediction_text = f"Predicted bird species: {predicted_label}"
-    return prediction_text, audio_path, reference_sample_path
+#     prediction_text = f"Espèce prédite: {predicted_label}"
+#     return prediction_text, audio_path, reference_sample_path
 
 DEFAULT_IMAGE_PATH='/home/christophe/birdclef/GradioApp/bird-7250976.jpg'
 
 label_to_file = {}
 for fpath, label in bird_dataset.samples:
     if label not in label_to_file:
-        label_to_file[label] = fpath  # use the first found file
-
-# def predict_by_label(label):
-#     audio_path = label_to_file[label]
-#     return predict_specific_file(audio_path)
+        label_to_file[label] = fpath  # use the first found file ?
 
 def predict_by_label(label):
     audio_path = label_to_file[label]
-    return predict_specific_file(audio_path)
+    return predict_specific_file(audio_path,label)
 
 with gr.Blocks() as app:
-    gr.Markdown("# Bird Species Classifier")
-    gr.Markdown("Select a bird species and click **Predict**.")
+    gr.HTML("""
+    <style>
+    
+    </style>
+    """)
+    gr.Markdown("# Application de classification d'espece d'oiseaux par leur chant",elem_classes="custom-markdown")
+    gr.Markdown("Selectionner une espèce et cliquez sur le bouton prédire",elem_classes="custom-markdown")
 
     label_selector = gr.Dropdown(
         choices=sorted(label_to_file.keys()),
-        label="Select Bird Species"
+        label="Selectionnez l'espece: ",
+        elem_classes="custom-dropdown"
     )
 
-    predict_button = gr.Button("Predict")
+    predict_button = gr.Button("Prédire",elem_classes="custom-button")
 
-    text_output = gr.Textbox(label="Prediction")
-    audio_player_input = gr.Audio(label="Input Audio", interactive=False, type="filepath")
-    audio_player_reference = gr.Audio(label="Reference Sample of Predicted Species", interactive=False, type="filepath")
+    text_output = gr.Textbox(label="Prédiction")
+    audio_player_input = gr.Audio(label="Bande son utilisée pour la prédiction", interactive=False, type="filepath")
+    audio_player_reference = gr.Audio(label="Bande son aléatoire de l'espèce prédite", interactive=False, type="filepath")
     image_output = gr.Image(label="", value=DEFAULT_IMAGE_PATH, height=800, width=1400, interactive=False)
 
     # Single button click triggers all outputs
@@ -203,44 +212,13 @@ with gr.Blocks() as app:
         inputs=label_selector,
         outputs=[text_output, audio_player_input, audio_player_reference]
     )
-# with gr.Blocks() as app:
-#     gr.Markdown("# Bird Species Classifier")
-#     gr.Markdown("Select a bird species and click **Predict** or **Play Audio**.")
-
-#     label_selector = gr.Dropdown(
-#         choices=sorted(label_to_file.keys()),
-#         label="Select Bird Species"
-#     )
-
-#     with gr.Row():
-#         predict_button = gr.Button("Predict")
-#         play_button = gr.Button("Play Audio")
-
-#     text_output = gr.Textbox(label="Prediction")
-#     audio_player_input = gr.Audio(label="Input Audio", interactive=False, type="filepath")
-#     audio_player_reference = gr.Audio(label="Reference Sample of Predicted Species", interactive=False, type="filepath")
-#     image_output = gr.Image(label="", value=DEFAULT_IMAGE_PATH, height=800, width=1400, interactive=False)
-
-#     predict_button.click(
-#     fn=predict_by_label,
-#     inputs=label_selector,
-#     outputs=[text_output, audio_player_reference]
-#         )
-
-#     # Play input audio
-#     play_button.click(
-#         fn=lambda label: label_to_file[label],
-#         inputs=label_selector,
-#         outputs=audio_player_input
-#     )
-
 
 if __name__ == "__main__":
     app.launch(share=True)
 
 
 
-
+# oldy code
 # with gr.Blocks() as app:
 #     gr.Markdown("# Bird Species Classifier")
 #     gr.Markdown("Select an audio file from the dataset and click predict.")
