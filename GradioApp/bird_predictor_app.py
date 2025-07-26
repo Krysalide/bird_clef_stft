@@ -7,12 +7,43 @@ import random
 import mlflow
 from collections import Counter
 from torch.utils.data import Dataset
-from model_gradio import BirdNetFFT
+from torch.utils.data import random_split
+from model_gradio import BirdNetFFT # our model with stft embedded
+
+'''
+This simple app loads a model from mlflow.
+Weights of the model are set with those that produced the best validation accuracy during training.
+The dataset loaded is the test set used in notebook for evaluation.
+The data has not been seen during training. 
+It is possible to hear the audio sample that has been predicted.
+It is also possible to hear a sample sound of the predicted species. 
+'''
 
 print('Gradio version:',gr.__version__)
 
+dataset_root_folder = '/home/christophe/birdclef/'
+audio_input_folder = dataset_root_folder + "train_audio"
+
 def get_id_from_label(dict_label:dict,label:str):
     return dict_label[label]
+
+
+FS=32000
+FIXED_LENGTH = int(5.0 * FS)  # 5 seconds
+
+def get_audio_data(audio_raw_file):
+    audio_data, _ = librosa.load(audio_raw_file, sr=FS)
+    if len(audio_data) < FIXED_LENGTH:
+        
+        # Pad with zeros
+        pad_width = FIXED_LENGTH - len(audio_data)
+        audio_data = np.pad(audio_data, (0, pad_width), mode='constant')
+    else:
+        
+        # Truncate
+        audio_data = audio_data[:FIXED_LENGTH]
+
+    return torch.from_numpy(audio_data).unsqueeze(0)
 
 class BirdAudioDatasetV2(Dataset):
     def __init__(self, root_dir, audio_extensions=(".ogg",)):
@@ -49,24 +80,45 @@ class BirdAudioDatasetV2(Dataset):
        
         return dict(self.label_counts)
     
-bird_dataset=BirdAudioDatasetV2(root_dir="/home/christophe/birdclef/train_audio")
+full_dataset=BirdAudioDatasetV2(root_dir="/home/christophe/birdclef/train_audio")
 
-# Constants
-FS = 32000
-FIXED_LENGTH = int(5.0 * FS)  # 5 seconds
-dataset_root_folder = '/home/christophe/birdclef/'
-audio_input_folder = dataset_root_folder + "train_audio"
+total_size = len(full_dataset)
+
+print('Total item in the dataset (train + valid + test): ',total_size)
+
+# reconstruction of the test set:
+
+train_size = int(0.7 * total_size)
+valid_size = int(0.15 * total_size)
+test_size  = total_size - train_size - valid_size  
+
+# dataset is reproducible
+generator = torch.Generator().manual_seed(42)
+train_set, valid_set, test_set = random_split(full_dataset, [train_size, valid_size, test_size], generator=generator)
+
+test_samples = [full_dataset.samples[i] for i in test_set.indices]
+
+# Custom class to recreate test dataset with all BirdAudioDatasetV2 features
+class BirdAudioSubsetDataset(BirdAudioDatasetV2):
+    def __init__(self, samples, transform=None):
+        self.samples = samples
+        self.transform = transform
+        self.loader = get_audio_data 
+        self.classes = sorted(list(set(label for _, label in samples)))  
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, label = self.samples[idx]
+        audio = self.loader(path)
+        if self.transform:
+            audio = self.transform(audio)
+        return audio, label
 
 
-def get_audio_data(audio_raw_file):
-    """Loads, pads/truncates audio to FIXED_LENGTH, and converts to Torch tensor."""
-    audio_data, _ = librosa.load(audio_raw_file, sr=FS)
-    if len(audio_data) < FIXED_LENGTH:
-        pad_width = FIXED_LENGTH - len(audio_data)
-        audio_data = np.pad(audio_data, (0, pad_width), mode='constant')
-    else:
-        audio_data = audio_data[:FIXED_LENGTH]
-    return torch.from_numpy(audio_data).unsqueeze(0)
+test_dataset_reconstructed = BirdAudioSubsetDataset(samples=test_samples)
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -88,7 +140,7 @@ bird_model = BirdNetFFT(num_classes=182,
                         classifer_train=False).to(device)
 
 
-print('entering loading of model')
+print('Will load model from mlflow artifacts')
 experiment_name = "birdnet_training"
 try:
     experiment = mlflow.get_experiment_by_name(experiment_name)
@@ -103,7 +155,7 @@ latest_run_id = 'b223ff8b8df84696aea632e616ae0a9f'
 
 try:
     local_path = mlflow.artifacts.download_artifacts(run_id=latest_run_id, artifact_path=artifact_path)
-    bird_model.load_state_dict(torch.load(local_path, map_location=device), strict=False)
+    bird_model.load_state_dict(torch.load(local_path, map_location=device,weights_only=True), strict=False)
     bird_model.eval()
     print("Model loaded successfully!")
 except Exception as e:
@@ -111,7 +163,7 @@ except Exception as e:
 
 
 
-def predict_specific_file(audio_path,label,debug=False):
+def predict_specific_file(audio_path,true_label,debug=False):
     """
     Predict the bird species and return:
     - prediction string
@@ -128,61 +180,37 @@ def predict_specific_file(audio_path,label,debug=False):
     predicted_index = torch.argmax(output).item()
     predicted_label = id2label[predicted_index]
     if debug:
-        print(predicted_label)
+        print('prediction: ',predicted_label,' true label: ',true_label)
 
     # Filter matching samples excluding the input file
     matching_files = [
-        fpath for fpath, label in bird_dataset.samples
+        fpath for fpath, label in full_dataset.samples
         if label == predicted_label and os.path.abspath(fpath) != os.path.abspath(audio_path)
     ]
 
     # Pick one at random to avoid getting the same
     reference_sample_path = random.choice(matching_files) if matching_files else None
     assert reference_sample_path!=audio_path
-    if label==predicted_label:
+
+    if true_label==predicted_label:
         prediction_text = f"✅ Espèce prédite correctement: {predicted_label}"
     else:
-        prediction_text = f"😴 Oups!! le modèle a prédit: {predicted_label}"
+        prediction_text = f"🫢 Oups!! le modèle a prédit: {predicted_label}, la véritable espèce est: {true_label}"
 
     return prediction_text, audio_path, reference_sample_path
 
-# def predict_specific_file(audio_path):
-#     """
-#     Predict the bird species and return:
-#     - prediction string
-#     - input file path (to be played)
-#     - one real sample path from dataset of that predicted species
-#     """
-#     if not os.path.exists(audio_path):
-#         return "Error: Audio file not found.", None, None
-
-#     audio_tensor = get_audio_data(audio_path).to(device)
-
-#     with torch.no_grad():
-#         output = bird_model(audio_tensor)
-#     predicted_index = torch.argmax(output).item()
-#     predicted_label = id2label[predicted_index]
-
-#     # Get one real file from dataset that matches predicted label
-#     reference_sample_path = None
-#     for fpath, label in bird_dataset.samples:
-#         if label == predicted_label:
-#             reference_sample_path = fpath
-#             break
-
-#     prediction_text = f"Espèce prédite: {predicted_label}"
-#     return prediction_text, audio_path, reference_sample_path
-
-DEFAULT_IMAGE_PATH='/home/christophe/birdclef/GradioApp/bird-7250976.jpg'
 
 label_to_file = {}
-for fpath, label in bird_dataset.samples:
+for fpath, label in test_dataset_reconstructed.samples:
     if label not in label_to_file:
-        label_to_file[label] = fpath  # use the first found file ?
+        label_to_file[label] = fpath  
 
 def predict_by_label(label):
+    if not label:
+        return "⚠️ Veuillez choisir une espèce svp ⚠️", None, None
+    
     audio_path = label_to_file[label]
-    return predict_specific_file(audio_path,label)
+    return predict_specific_file(audio_path,label,debug=True)
 
 with gr.Blocks() as app:
     gr.HTML("""
@@ -202,9 +230,9 @@ with gr.Blocks() as app:
     predict_button = gr.Button("Prédire",elem_classes="custom-button")
 
     text_output = gr.Textbox(label="Prédiction")
-    audio_player_input = gr.Audio(label="Bande son utilisée pour la prédiction", interactive=False, type="filepath")
-    audio_player_reference = gr.Audio(label="Bande son aléatoire de l'espèce prédite", interactive=False, type="filepath")
-    image_output = gr.Image(label="", value=DEFAULT_IMAGE_PATH, height=800, width=1400, interactive=False)
+    audio_player_input = gr.Audio(label="🔈 Bande son utilisée pour la prédiction", interactive=False, type="filepath")
+    audio_player_reference = gr.Audio(label="🔈 Bande son de l'espèce prédite par le modèle", interactive=False, type="filepath")
+    #image_output = gr.Image(label="", value=DEFAULT_IMAGE_PATH, height=800, width=1400, interactive=False)
 
     # Single button click triggers all outputs
     predict_button.click(
@@ -218,63 +246,3 @@ if __name__ == "__main__":
 
 
 
-# oldy code
-# with gr.Blocks() as app:
-#     gr.Markdown("# Bird Species Classifier")
-#     gr.Markdown("Select an audio file from the dataset and click predict.")
-
-   
-#     label_selector = gr.Dropdown(
-#         choices=sorted(label_to_file.keys()),
-#         label="Select Bird Species"
-#     )
-    
-
-#     with gr.Row():
-#         predict_button = gr.Button("Predict")
-#         play_button = gr.Button("Play Audio")
-
-#     # Output text and image
-#     text_output = gr.Textbox(label="Prediction")
-#     audio_player = gr.Audio(label="Audio Preview", interactive=False, type="filepath")
-#     image_output = gr.Image(label="", value=DEFAULT_IMAGE_PATH, height=800, width=1400, interactive=False)
-
-#     predict_button.click(
-#         fn=lambda label: predict_specific_file(label_to_file[label]),
-#         inputs=label_selector,
-#         outputs=text_output
-#     )
-
-#     play_button.click(
-#         fn=lambda label: label_to_file[label],
-#         inputs=label_selector,
-#         outputs=audio_player
-#     )
-
-
-
-
-# naive version 1
-# --- Gradio Interface ---
-# with gr.Blocks() as app:
-#     gr.Markdown("# Bird Species Classifier (Simple Demo)")
-#     gr.Markdown("Click a button to get a prediction for a pre-defined bird audio file.")
-
-#     with gr.Row():
-#         # Button for audio_file_1
-#         btn1 = gr.Button(f"Predict for XC655341.ogg")
-#         # Button for audio_file_2
-#         btn2 = gr.Button(f"Predict for XC124995.ogg")
-#         # Button for audio_file_3
-#         btn3 = gr.Button(f"Predict for XC127906.ogg")
-
-#     text_output = gr.Textbox(label="Prediction")
-
-    
-
-#     image_output = gr.Image(label="", value=DEFAULT_IMAGE_PATH, height=800, width=1400, interactive=False)
-
-#     # Attach click events to buttons
-#     btn1.click(fn=lambda: predict_specific_file(audio_file_1), inputs=None, outputs=text_output)
-#     btn2.click(fn=lambda: predict_specific_file(audio_file_2), inputs=None, outputs=text_output)
-#     btn3.click(fn=lambda: predict_specific_file(audio_file_3), inputs=None, outputs=text_output)
